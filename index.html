@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OptiTrip 일정</title>
+<style>
+  :root { --primary:#0E7C86; --accent:#FF7A45; --sub:#5F7574; --line:#E1E9E9; --bg:#F4F7F7; --naver:#03C75A; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: -apple-system, "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", sans-serif;
+         background:var(--bg); color:#1d2b2b; }
+  header { background:var(--primary); color:#fff; padding:18px 16px 14px; }
+  header .brand { font-weight:900; opacity:.9; font-size:13px; }
+  header .brand b { color:#FFD7C4; }
+  header h1 { margin:6px 0 2px; font-size:21px; }
+  header .meta { font-size:13px; opacity:.85; }
+  .tabs { display:flex; gap:6px; overflow-x:auto; padding:12px 16px 4px; }
+  .tab { border:1px solid var(--line); background:#fff; border-radius:999px; padding:7px 12px; font-size:13px;
+         white-space:nowrap; cursor:pointer; }
+  .tab.on { background:var(--primary); border-color:var(--primary); color:#fff; font-weight:700; }
+  main { padding:8px 16px 32px; max-width:640px; margin:0 auto; }
+  .leg { font-size:12px; color:var(--sub); padding:4px 0 4px 18px; }
+  .stop { background:#fff; border:1px solid var(--line); border-radius:12px; padding:10px 12px; margin:2px 0; }
+  .stop.meal { background:#FFF7F2; border-color:#FFD9C6; }
+  .stop.base { background:#F0F4F4; }
+  .time { font-weight:900; font-size:13px; color:var(--primary); }
+  .stop.meal .time { color:var(--accent); }
+  .row { display:flex; align-items:center; gap:8px; }
+  .name { font-weight:700; flex:1; }
+  .note { font-size:12px; color:var(--sub); margin-top:2px; }
+  a.n { color:var(--naver); font-size:12px; font-weight:700; text-decoration:none; white-space:nowrap; }
+  .msg { text-align:center; color:var(--sub); padding:48px 16px; }
+  footer { text-align:center; font-size:12px; color:var(--sub); padding:12px 16px 28px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">OptiTrip <b>?→!</b></div>
+  <h1 id="title">일정 불러오는 중…</h1>
+  <div class="meta" id="meta"></div>
+</header>
+<div class="tabs" id="tabs"></div>
+<main id="main"><div class="msg">잠시만 기다려 주세요.</div></main>
+<footer>OptiTrip에서 만든 일정이에요 · 시간은 예상치예요</footer>
+<script>
+  // ▼ Supabase 프로젝트 주소와 공개용 키(anon 또는 publishable) — 공개돼도 되는 값 (읽기는 get_share 함수로만 가능)
+  const SUPABASE_URL = 'https://cjsnomfnxcyynywsvbcw.supabase.co';
+  const SUPABASE_ANON_KEY = 'sb_publishable_0elaCT3NXBQc9JD6VH_ybA_f7EjXerk';
+
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const wd = ['일','월','화','수','목','금','토'];
+  const fmtDate = (iso) => { const d = new Date(iso + 'T00:00:00'); return `${d.getMonth()+1}/${d.getDate()}(${wd[d.getDay()]})`; };
+  const modeIcon = { car:'🚗', transit:'🚌', walk:'🚶' };
+
+  let snap = null, day = 0;
+
+  function render() {
+    const days = snap.days || [];
+    $('tabs').innerHTML = days.map((d, i) =>
+      `<button class="tab ${i === day ? 'on' : ''}" data-i="${i}">${i + 1}일차 ${fmtDate(d.date)}</button>`).join('');
+    document.querySelectorAll('.tab').forEach((b) => b.onclick = () => { day = +b.dataset.i; render(); });
+    const items = (days[day] || {}).items || [];
+    const icon = modeIcon[snap.mode] || '🚗';
+    $('main').innerHTML = items.map((it, i) => {
+      const base = it.kind === 'start' || it.kind === 'end';
+      const label = it.kind === 'start' ? (day === 0 ? '출발' : '숙소 출발')
+                  : it.kind === 'end' ? '도착' : (it.label || '');
+      const time = it.stay > 0 ? `${it.arrive} – ${it.depart}` : it.arrive;
+      const link = `https://map.naver.com/p/search/${encodeURIComponent(it.name)}`;
+      return `${i > 0 && it.travel > 0 ? `<div class="leg">${icon} ${it.travel}분 이동</div>` : ''}
+        <div class="stop ${it.kind === 'meal' ? 'meal' : base ? 'base' : ''}">
+          <div class="time">${esc(time)}${label ? ' · ' + esc(label) : ''}</div>
+          <div class="row"><div class="name">${esc(it.emoji || '')} ${esc(it.name)}</div>
+            <a class="n" href="${link}" target="_blank" rel="noopener">N지도</a></div>
+          ${it.note && !base ? `<div class="note">${esc(it.note)}</div>` : ''}
+        </div>`;
+    }).join('') || '<div class="msg">이날 일정이 없어요.</div>';
+  }
+
+  async function load() {
+    const id = new URLSearchParams(location.search).get('id');
+    if (!id) { $('title').textContent = '공유 링크가 올바르지 않아요'; $('main').innerHTML = ''; return; }
+    try {
+      const r = await fetch(`${SUPABASE_URL}/rest/v1/rpc/get_share`, {
+        method: 'POST',
+        headers: { apikey: SUPABASE_ANON_KEY, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ p_id: id }),
+      });
+      const data = await r.json();
+      if (!r.ok || !data) throw new Error('not found');
+      snap = data.snapshot;
+      document.title = `${data.title} · OptiTrip`;
+      $('title').textContent = data.title;
+      const days = snap.days || [];
+      $('meta').textContent = days.length
+        ? `${fmtDate(days[0].date)}${days.length > 1 ? ' ~ ' + fmtDate(days[days.length - 1].date) : ''} · ${days.length > 1 ? `${days.length - 1}박 ${days.length}일` : '당일'}`
+        : '';
+      render();
+    } catch (e) {
+      $('title').textContent = '일정을 찾을 수 없어요';
+      $('main').innerHTML = '<div class="msg">링크가 만료됐거나 잘못된 주소예요.</div>';
+    }
+  }
+  load();
+</script>
+</body>
+</html>
