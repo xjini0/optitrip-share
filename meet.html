@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OptiTrip 모임</title>
+<style>
+  :root { --main:#7B61FF; --primary:#0E7C86; --sub:#5F7574; --line:#E1E9E9; --bg:#F4F7F7; --warn:#C0392B; --naver:#03C75A; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:-apple-system,"Apple SD Gothic Neo","Noto Sans KR","Malgun Gothic",sans-serif; background:var(--bg); color:#1d2b2b; }
+  header { background:var(--main); color:#fff; padding:18px 16px 14px; }
+  header .brand { font-weight:900; font-size:13px; opacity:.9; } header .brand b { color:#E4DDFF; }
+  header h1 { margin:6px 0 2px; font-size:21px; } header .meta { font-size:13px; opacity:.9; }
+  main { max-width:640px; margin:0 auto; padding:12px 16px 32px; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:14px; padding:14px; margin-bottom:12px; }
+  .card h2 { margin:0 0 10px; font-size:16px; }
+  label { display:block; font-size:13px; color:var(--sub); margin:10px 0 6px; }
+  input[type=text] { width:100%; padding:11px 12px; border:1px solid var(--line); border-radius:10px; font-size:15px; }
+  .row { display:flex; gap:8px; align-items:center; }
+  .btn { border:0; border-radius:10px; padding:11px 14px; font-size:15px; font-weight:700; cursor:pointer; background:#EFEDFF; color:var(--main); white-space:nowrap; }
+  .btn.main { background:var(--main); color:#fff; width:100%; padding:14px; margin-top:14px; }
+  .btn:disabled { opacity:.5; }
+  .chips { display:flex; flex-wrap:wrap; gap:6px; }
+  .chip { border:1px solid var(--line); background:#fff; border-radius:999px; padding:7px 12px; font-size:14px; cursor:pointer; }
+  .chip.on { background:var(--main); border-color:var(--main); color:#fff; }
+  .results div { padding:9px 4px; border-bottom:1px solid var(--line); cursor:pointer; }
+  .results small { color:var(--sub); display:block; }
+  .picked { font-weight:800; margin-top:6px; }
+  .member { padding:6px 0; border-bottom:1px dashed var(--line); font-size:14px; }
+  .member small { color:var(--sub); }
+  .final { background:#EFEDFF; border-color:var(--main); }
+  .final .big { font-size:20px; font-weight:900; margin:4px 0; }
+  a.n { color:var(--naver); font-weight:700; text-decoration:none; }
+  .msg { color:var(--sub); font-size:13px; } .err { color:var(--warn); font-size:13px; margin-top:8px; }
+  footer { text-align:center; font-size:12px; color:var(--sub); padding:4px 16px 28px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">OptiTrip <b>?→!</b> · 모임</div>
+  <h1 id="title">불러오는 중…</h1>
+  <div class="meta" id="meta"></div>
+</header>
+<main id="main"><div class="msg">잠시만 기다려 주세요.</div></main>
+<footer>출발지는 가까운 역이나 동네로 입력해 주세요 · 다른 참석자에게는 이름과 역 이름만 보여요</footer>
+
+<script type="module">
+  // ▼ index.html 과 같은 값 (공개용 키)
+  const SUPABASE_URL = 'https://YOUR-PROJECT.supabase.co';
+  const SUPABASE_ANON_KEY = 'YOUR-ANON-KEY';
+
+  import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
+  const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const wd = ['일','월','화','수','목','금','토'];
+  const fmtDate = (iso) => { const d = new Date(iso + 'T00:00:00'); return `${d.getMonth()+1}/${d.getDate()}(${wd[d.getDay()]})`; };
+  const fmtTime = (m) => `${String(Math.floor(m / 60) % 24).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+  const PURPOSE = { company:'🍻 회식', birthday:'🎂 생일·기념일', friends:'👭 친목', family:'👨‍👩‍👧 가족 모임', study:'📚 스터디·회의', date:'💑 데이트', business:'🤝 접대·비즈니스' };
+  const CUISINE = { korean:'🍚 한식', meat:'🥩 고기', seafood:'🐟 해산물·회', japanese:'🍣 일식', chinese:'🥟 중식', western:'🍝 양식', asian:'🍜 아시안', pub:'🍺 술집', cafe:'☕ 카페' };
+  const MODE = { transit:'🚌 대중교통', car:'🚗 자동차', walk:'🚶 도보' };
+
+  const id = new URLSearchParams(location.search).get('id');
+  const tokenKey = `optitrip_meet_${id}`;
+  const store = { get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+                  set(k, v) { try { localStorage.setItem(k, v); } catch {} } };
+  let meet = null;
+  const form = { name: '', origin: null, dest: null, mode: 'transit', likes: new Set(), sameDest: true };
+
+  // ---------- 서버 ----------
+  async function rpc(fn, args) {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/rpc/${fn}`, {
+      method: 'POST', headers: { apikey: SUPABASE_ANON_KEY, 'Content-Type': 'application/json' }, body: JSON.stringify(args),
+    });
+    const data = await r.json().catch(() => null);
+    if (!r.ok) throw new Error((data && (data.message || data.hint)) || `오류 ${r.status}`);
+    return data;
+  }
+  async function proxy(api, query) {
+    let { data: { session } } = await sb.auth.getSession();
+    if (!session) ({ data: { session } } = await sb.auth.signInAnonymously());
+    const r = await fetch(`${SUPABASE_URL}/functions/v1/api-proxy`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${session.access_token}`, apikey: SUPABASE_ANON_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ api, query }),
+    });
+    if (!r.ok) throw new Error(`검색 오류 ${r.status}`);
+    return r.json();
+  }
+  const coord = (v) => { const d = parseFloat(v); return d > 1000 ? d / 1e7 : d; };
+  async function searchPlaces(q) {
+    const j = await proxy('naver_search', { query: q, display: '5', start: '1', sort: 'random' });
+    return (j.items || []).map((it, i) => ({
+      id: `w_${Date.now()}_${i}`, name: it.title.replace(/<[^>]*>/g, '').replace(/&amp;/g, '&'), cat: 'see',
+      lat: coord(it.mapy), lng: coord(it.mapx), address: it.roadAddress || it.address || '',
+    })).filter((p) => p.lat > 32 && p.lat < 39);
+  }
+  async function hereAsPlace() {
+    const pos = await new Promise((ok, no) => navigator.geolocation.getCurrentPosition(ok, no, { timeout: 15000 }));
+    // 개인정보: 약 100m 단위로 반올림
+    const lat = Math.round(pos.coords.latitude * 1000) / 1000, lng = Math.round(pos.coords.longitude * 1000) / 1000;
+    let name = '현재 위치 근처';
+    try {
+      const j = await proxy('naver_reverse', { coords: `${lng},${lat}`, orders: 'admcode' });
+      const r = (j.results || [])[0]?.region;
+      if (r) name = `${r.area2?.name || r.area1?.name || ''} ${r.area3?.name || ''}`.trim() + ' 근처';
+    } catch {}
+    return { id: `w_here_${Date.now()}`, name, cat: 'see', lat, lng };
+  }
+
+  // ---------- 화면 ----------
+  function header() {
+    const d = meet.data || {};
+    $('title').textContent = meet.title;
+    document.title = `${meet.title} · OptiTrip 모임`;
+    $('meta').textContent = `${d.date ? fmtDate(d.date) : ''} ${d.startTime != null ? fmtTime(d.startTime) : ''} · ${PURPOSE[d.purpose] || ''}`;
+  }
+  function membersHtml() {
+    const ms = meet.members || [];
+    return `<div class="card"><h2>👥 지금까지 ${ms.length}명</h2>${ms.map((m) =>
+      `<div class="member"><b>${esc(m.name)}</b> <small>${MODE[m.mode] || ''} · ${esc(m.origin || '')}${m.dest ? ' → ' + esc(m.dest) : ''}</small>
+       ${(m.likes || []).length ? `<br><small>${m.likes.map((c) => CUISINE[c] || '').join(' ')}</small>` : ''}</div>`).join('') || '<div class="msg">아직 없어요. 첫 번째로 입력해 주세요!</div>'}</div>`;
+  }
+  function finalHtml() {
+    const f = meet.final || {}, v = f.venue, v2 = f.venue2;
+    const link = (p) => `https://map.naver.com/p/search/${encodeURIComponent(p.name)}`;
+    return `<div class="card final"><h2>✅ 모임 장소가 정해졌어요</h2>
+      <div class="msg">${esc(f.area || '')} · ${esc(f.time || '')}</div>
+      ${v ? `<div class="big">${esc(v.name)}</div><div class="msg">${esc(v.address || v.why || '')}</div>
+             <p><a class="n" href="${link(v)}" target="_blank" rel="noopener">N 지도에서 보기 · 길찾기</a></p>` : ''}
+      ${v2 ? `<div class="msg">2차: <b>${esc(v2.name)}</b> · <a class="n" href="${link(v2)}" target="_blank" rel="noopener">N지도</a></div>` : ''}
+    </div>`;
+  }
+  function placeBlock(key, title) {
+    const p = form[key];
+    return `<label>${title}</label>
+      <div class="row"><input type="text" id="q_${key}" placeholder="가까운 역·동네 (예: 강남역, 망원동)">
+        <button class="btn" data-search="${key}">검색</button></div>
+      ${key === 'origin' ? '<div style="margin-top:6px"><button class="btn" id="here">📍 현재 위치 근처로</button></div>' : ''}
+      <div class="results" id="r_${key}"></div>
+      <div class="picked" id="p_${key}">${p ? '✔ ' + esc(p.name) : ''}</div>`;
+  }
+  function formHtml(editing) {
+    return `<div class="card"><h2>${editing ? '✏️ 내 입력 수정' : '🙋 참석 정보 입력'}</h2>
+      <label>이름</label><input type="text" id="name" maxlength="20" value="${esc(form.name)}" placeholder="단톡방 이름">
+      ${placeBlock('origin', '어디서 출발해요?')}
+      <label><input type="checkbox" id="same" ${form.sameDest ? 'checked' : ''}> 끝나고 출발지로 돌아가요</label>
+      <div id="destBox" style="display:${form.sameDest ? 'none' : 'block'}">${placeBlock('dest', '끝나고 갈 곳')}</div>
+      <label>이동 수단</label><div class="chips">${Object.entries(MODE).map(([k, l]) =>
+        `<span class="chip ${form.mode === k ? 'on' : ''}" data-mode="${k}">${l}</span>`).join('')}</div>
+      <label>먹고 싶은 메뉴 (여러 개)</label><div class="chips">${Object.entries(CUISINE).map(([k, l]) =>
+        `<span class="chip ${form.likes.has(k) ? 'on' : ''}" data-like="${k}">${l}</span>`).join('')}</div>
+      <button class="btn main" id="submit">${editing ? '수정하기' : '입력 완료'}</button>
+      <div class="err" id="err"></div></div>`;
+  }
+
+  function render() {
+    header();
+    const editing = !!store.get(tokenKey);
+    let html = '';
+    if (meet.status === 'final') html += finalHtml();
+    else if (editing && !window.__edit) html += `<div class="card"><h2>👍 입력해 주셔서 고마워요</h2>
+        <div class="msg">주최자가 모두에게 공평한 장소를 정하면 이 페이지에 표시돼요.</div>
+        <button class="btn" id="edit" style="margin-top:10px">내 입력 수정</button></div>`;
+    else html += formHtml(editing);
+    html += membersHtml();
+    $('main').innerHTML = html;
+    bind();
+  }
+
+  function bind() {
+    $('edit')?.addEventListener('click', () => { window.__edit = true; render(); });
+    $('name')?.addEventListener('input', (e) => form.name = e.target.value);
+    $('same')?.addEventListener('change', (e) => { form.sameDest = e.target.checked; if (form.sameDest) form.dest = null;
+      $('destBox').style.display = form.sameDest ? 'none' : 'block'; });
+    document.querySelectorAll('[data-mode]').forEach((c) => c.onclick = () => { form.mode = c.dataset.mode; render(); });
+    document.querySelectorAll('[data-like]').forEach((c) => c.onclick = () => {
+      const k = c.dataset.like; form.likes.has(k) ? form.likes.delete(k) : form.likes.add(k); c.classList.toggle('on'); });
+    document.querySelectorAll('[data-search]').forEach((b) => b.onclick = async () => {
+      const key = b.dataset.search, q = $(`q_${key}`).value.trim(), box = $(`r_${key}`);
+      if (!q) return;
+      box.innerHTML = '<div class="msg">찾는 중…</div>';
+      try {
+        const list = await searchPlaces(q);
+        box.innerHTML = list.map((p, i) => `<div data-i="${i}">${esc(p.name)}<small>${esc(p.address)}</small></div>`).join('')
+          || '<div class="msg">결과가 없어요. 역 이름으로 검색해 보세요.</div>';
+        box.querySelectorAll('[data-i]').forEach((d) => d.onclick = () => {
+          form[key] = list[+d.dataset.i]; box.innerHTML = ''; $(`p_${key}`).textContent = '✔ ' + form[key].name; });
+      } catch (e) { box.innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+    });
+    $('here')?.addEventListener('click', async () => {
+      $('p_origin').textContent = '위치 확인 중…';
+      try { form.origin = await hereAsPlace(); $('p_origin').textContent = '✔ ' + form.origin.name; }
+      catch { $('p_origin').textContent = '위치를 가져오지 못했어요. 검색으로 입력해 주세요.'; }
+    });
+    $('submit')?.addEventListener('click', submit);
+  }
+
+  async function submit() {
+    const err = $('err');
+    form.name = $('name').value.trim();
+    if (!form.name) return err.textContent = '이름을 입력해 주세요.';
+    if (!form.origin) return err.textContent = '출발지를 골라 주세요.';
+    if (!form.sameDest && !form.dest) return err.textContent = '끝나고 갈 곳을 골라 주세요 (또는 체크).';
+    const data = { origin: form.origin, mode: form.mode, likes: [...form.likes], ...(form.dest ? { dest: form.dest } : {}) };
+    $('submit').disabled = true;
+    try {
+      const token = store.get(tokenKey);
+      if (token) await rpc('update_member', { p_token: token, p_name: form.name, p_data: data });
+      else store.set(tokenKey, await rpc('join_meeting', { p_id: id, p_name: form.name, p_data: data }));
+      store.set(tokenKey + '_form', JSON.stringify({ ...data, name: form.name }));
+      window.__edit = false;
+      await load();
+    } catch (e) { err.textContent = e.message; $('submit').disabled = false; }
+  }
+
+  async function load() {
+    if (!id) { $('title').textContent = '초대 링크가 올바르지 않아요'; $('main').innerHTML = ''; return; }
+    try {
+      meet = await rpc('get_meeting', { p_id: id });
+      if (!meet) throw new Error();
+      // 이전에 입력한 내용 불러오기 (수정용)
+      try {
+        const saved = JSON.parse(store.get(tokenKey + '_form') || 'null');
+        if (saved) Object.assign(form, { name: saved.name, origin: saved.origin, dest: saved.dest || null,
+          sameDest: !saved.dest, mode: saved.mode, likes: new Set(saved.likes || []) });
+      } catch {}
+      render();
+    } catch {
+      $('title').textContent = '모임을 찾을 수 없어요';
+      $('main').innerHTML = '<div class="msg">링크가 잘못됐거나 삭제된 모임이에요.</div>';
+    }
+  }
+  load();
+</script>
+</body>
+</html>
